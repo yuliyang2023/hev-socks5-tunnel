@@ -19,7 +19,7 @@
 下载解压后，先检查完整性，再上传到 `/tmp` 测试，不直接覆盖运行中的程序：
 
 ```sh
-sha256sum -c SHA256SUMS
+shasum -a 256 -c SHA256SUMS # macOS；Linux 也可用 sha256sum -c SHA256SUMS
 scp hev-socks5-tunnel-oray-x1 oray:/tmp/hev-socks5-tunnel-oray-x1
 ssh oray
 chmod 700 /tmp/hev-socks5-tunnel-oray-x1
