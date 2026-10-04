@@ -1,0 +1,102 @@
+name: Build OrayBox X1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oray-x1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  oray-x1:
+    name: MIPS32 little-endian soft-float
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TOOLCHAIN: mipsel-unknown-linux-muslsf
+      TOOLCHAIN_RELEASE: "20261001"
+      TOOLCHAIN_SHA256: 93fcfc5e8d28096941df04c3c5bc56b653d8aa81f8634671f236e0f443a451b6
+    steps:
+      - name: Checkout source and submodules
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Download and verify cross compiler
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output toolchain.tar.xz \
+            "https://github.com/cross-tools/musl-cross/releases/download/${TOOLCHAIN_RELEASE}/${TOOLCHAIN}.tar.xz"
+          echo "${TOOLCHAIN_SHA256}  toolchain.tar.xz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/x-tools"
+          tar -xJf toolchain.tar.xz -C "$RUNNER_TEMP/x-tools"
+
+      - name: Build static binary for MT7628 / MIPS 24KEc
+        run: |
+          set -euo pipefail
+          make \
+            CROSS_PREFIX="$RUNNER_TEMP/x-tools/$TOOLCHAIN/bin/$TOOLCHAIN-" \
+            CFLAGS="-Os -march=24kec -mabi=32 -msoft-float" \
+            ENABLE_STATIC=1 -j"$(nproc)"
+          mkdir -p dist
+          cp bin/hev-socks5-tunnel dist/hev-socks5-tunnel-oray-x1
+          cp LICENSE dist/LICENSE
+
+      - name: Verify ELF architecture and ABI
+        run: |
+          set -euo pipefail
+          READELF="$RUNNER_TEMP/x-tools/$TOOLCHAIN/bin/$TOOLCHAIN-readelf"
+          BINARY=dist/hev-socks5-tunnel-oray-x1
+          file "$BINARY" | tee dist/file-info.txt
+          "$READELF" -h "$BINARY" | tee dist/elf-header.txt
+          "$READELF" -A "$BINARY" | tee dist/elf-attributes.txt
+          grep -q 'ELF32' dist/elf-header.txt
+          grep -q 'little endian' dist/elf-header.txt
+          grep -q 'MIPS' dist/elf-header.txt
+          grep -qi 'soft float' dist/elf-attributes.txt
+          if "$READELF" -l "$BINARY" | grep -q INTERP; then
+            echo 'Unexpected dynamic loader dependency' >&2
+            exit 1
+          fi
+
+      - name: Check startup under MIPS 24KEc emulation
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user
+          set +e
+          output=$(timeout 10 qemu-mipsel -cpu 24KEc dist/hev-socks5-tunnel-oray-x1 --version 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output" | tee dist/version.txt
+          # Upstream main() returns -1 (shell status 255) after printing version.
+          test "$status" -eq 255
+          grep -q 'Version:' dist/version.txt
+
+      - name: Write build manifest
+        run: |
+          set -euo pipefail
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Target: OrayBox X1 / MediaTek MT7628 / MIPS 24KEc"
+            echo "ABI: ELF32 little-endian O32 soft-float, static musl"
+            echo "Toolchain: $TOOLCHAIN_RELEASE / $TOOLCHAIN"
+            echo "Compiler flags: -Os -march=24kec -mabi=32 -msoft-float"
+            echo "Built at: $(date -u +%FT%TZ)"
+          } > dist/build-info.txt
+          (cd dist && sha256sum hev-socks5-tunnel-oray-x1 > SHA256SUMS)
+          cat dist/build-info.txt dist/SHA256SUMS
+
+      - name: Upload OrayBox X1 binary and verification reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: hev-socks5-tunnel-oray-x1
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
